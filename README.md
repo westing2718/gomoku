@@ -46,10 +46,6 @@ AI 使用启发式评估函数，通过以下方式选择最佳落子位置：
 └── README.md     # 项目说明
 ```
 
-## 截图
-
-![游戏界面](screenshot.png)
-
 ## 许可证
 
 MIT License

@@ -11,84 +11,54 @@ canvas.height = BOARD_PX;
 let grid, turn, history, gameOver, winLine;
 let score = { black: 0, white: 0 };
 let mode = 'pvp'; // 'pvp' or 'pve'
-const AI_DEPTH = 4;
+const AI_DEPTH = 6;
 
-// --- AI ---
-function findBestMove(board) {
-    let best = null, bestScore = -Infinity;
-    const center = Math.floor(SIZE / 2);
+// ===================== AI Engine =====================
 
+// Pattern scores
+const SCORE = {
+    FIVE:       10000000,
+    OPEN_FOUR:   5000000,
+    RUSH_FOUR:    500000,
+    OPEN_THREE:    50000,
+    SLEEP_THREE:    5000,
+    OPEN_TWO:        500,
+    SLEEP_TWO:        50,
+    OPEN_ONE:          5,
+};
+
+// Get candidate moves (positions near existing stones)
+function getCandidates(board, dist) {
+    const candidates = new Set();
     for (let r = 0; r < SIZE; r++) {
         for (let c = 0; c < SIZE; c++) {
-            if (board[r][c] !== 0) continue;
-            if (!hasNeighbor(board, r, c, 2)) continue;
-
-            board[r][c] = 2; // AI = white
-            const score = evaluatePoint(board, r, c, 2) + evaluateBoard(board, 2) - evaluateBoard(board, 1);
-            board[r][c] = 0;
-
-            if (score > bestScore) {
-                bestScore = score;
-                best = { r, c };
+            if (board[r][c] === 0) continue;
+            for (let dr = -dist; dr <= dist; dr++) {
+                for (let dc = -dist; dc <= dist; dc++) {
+                    const nr = r + dr, nc = c + dc;
+                    if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && board[nr][nc] === 0) {
+                        candidates.add(nr * SIZE + nc);
+                    }
+                }
             }
         }
     }
-
-    if (!best) best = { r: center, c: center };
-    return best;
+    return [...candidates].map(v => ({ r: Math.floor(v / SIZE), c: v % SIZE }));
 }
 
-function hasNeighbor(board, r, c, dist) {
-    for (let dr = -dist; dr <= dist; dr++) {
-        for (let dc = -dist; dc <= dist; dc++) {
-            if (dr === 0 && dc === 0) continue;
-            const nr = r + dr, nc = c + dc;
-            if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && board[nr][nc] !== 0) return true;
-        }
-    }
-    return false;
-}
-
-function evaluatePoint(board, r, c, player) {
-    const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
-    let score = 0;
-
-    for (const [dr, dc] of dirs) {
-        const { count, open } = countLine(board, r, c, dr, dc, player);
-        score += lineScore(count, open);
-    }
-
-    const centerDist = Math.abs(r - 7) + Math.abs(c - 7);
-    score += Math.max(0, 14 - centerDist) * 0.5;
-
-    return score;
-}
-
-function evaluateBoard(board, player) {
-    let total = 0;
-
-    for (let r = 0; r < SIZE; r++) {
-        for (let c = 0; c < SIZE; c++) {
-            if (board[r][c] !== player) continue;
-            const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
-            for (const [dr, dc] of dirs) {
-                const { count, open } = countLine(board, r, c, dr, dc, player);
-                if (count >= 2) total += lineScore(count, open);
-            }
-        }
-    }
-    return total;
-}
-
-function countLine(board, r, c, dr, dc, player) {
+// Evaluate a line segment pattern for a player
+function evaluateLine(board, r, c, dr, dc, player) {
+    const opp = player === 1 ? 2 : 1;
     let count = 1, open = 0;
 
+    // Forward
     let nr = r + dr, nc = c + dc;
     while (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && board[nr][nc] === player) {
         count++; nr += dr; nc += dc;
     }
     if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && board[nr][nc] === 0) open++;
 
+    // Backward
     nr = r - dr; nc = c - dc;
     while (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && board[nr][nc] === player) {
         count++; nr -= dr; nc -= dc;
@@ -98,28 +68,213 @@ function countLine(board, r, c, dr, dc, player) {
     return { count, open };
 }
 
-function lineScore(count, open) {
-    if (count >= 5) return 1000000;
+// Evaluate the entire board for one player
+function evaluateBoard(board, player) {
+    let total = 0;
+    const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
+
+    for (let r = 0; r < SIZE; r++) {
+        for (let c = 0; c < SIZE; c++) {
+            if (board[r][c] !== player) continue;
+            for (const [dr, dc] of dirs) {
+                const { count, open } = evaluateLine(board, r, c, dr, dc, player);
+                total += scoreLine(count, open);
+            }
+        }
+    }
+    return total;
+}
+
+// Score a single line pattern
+function scoreLine(count, open) {
+    if (count >= 5) return SCORE.FIVE;
     if (count === 4) {
-        if (open === 2) return 100000;
-        if (open === 1) return 10000;
+        if (open === 2) return SCORE.OPEN_FOUR;
+        if (open === 1) return SCORE.RUSH_FOUR;
     }
     if (count === 3) {
-        if (open === 2) return 5000;
-        if (open === 1) return 500;
+        if (open === 2) return SCORE.OPEN_THREE;
+        if (open === 1) return SCORE.SLEEP_THREE;
     }
     if (count === 2) {
-        if (open === 2) return 200;
-        if (open === 1) return 30;
+        if (open === 2) return SCORE.OPEN_TWO;
+        if (open === 1) return SCORE.SLEEP_TWO;
     }
     if (count === 1) {
-        if (open === 2) return 10;
-        if (open === 1) return 2;
+        if (open === 2) return SCORE.OPEN_ONE;
     }
     return 0;
 }
 
-// --- Win check ---
+// Quick evaluation for a point (used in move scoring)
+function evaluatePoint(board, r, c, player) {
+    const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
+    let total = 0;
+    for (const [dr, dc] of dirs) {
+        const { count, open } = evaluateLine(board, r, c, dr, dc, player);
+        total += scoreLine(count, open);
+    }
+    return total;
+}
+
+// Score a candidate move for sorting purposes
+function moveScore(board, r, c) {
+    // Attack score (AI = white, player = 2)
+    board[r][c] = 2;
+    const attack = evaluatePoint(board, r, c, 2);
+    board[r][c] = 0;
+
+    // Defense score (human = black, player = 1)
+    board[r][c] = 1;
+    const defense = evaluatePoint(board, r, c, 1);
+    board[r][c] = 0;
+
+    return attack + defense * 0.9;
+}
+
+// Generate and sort candidate moves
+function getSortedCandidates(board) {
+    const candidates = getCandidates(board, 2);
+    if (candidates.length === 0) return [{ r: 7, c: 7 }];
+
+    // Score and sort candidates
+    for (const m of candidates) {
+        m.score = moveScore(board, m.r, m.c);
+    }
+    candidates.sort((a, b) => b.score - a.score);
+
+    // Limit candidates to top N for performance
+    const maxCandidates = 15;
+    return candidates.slice(0, maxCandidates);
+}
+
+// Check if there's a winning move for a player
+function hasWinningMove(board, player) {
+    const candidates = getCandidates(board, 2);
+    for (const { r, c } of candidates) {
+        board[r][c] = player;
+        const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
+        for (const [dr, dc] of dirs) {
+            const { count } = evaluateLine(board, r, c, dr, dc, player);
+            if (count >= 5) { board[r][c] = 0; return { r, c }; }
+        }
+        board[r][c] = 0;
+    }
+    return null;
+}
+
+// Minimax with Alpha-Beta pruning
+function minimax(board, depth, alpha, beta, isMax, aiPlayer, humanPlayer) {
+    // Terminal check: if someone already won
+    if (depth === 0) {
+        const aiScore = evaluateBoard(board, aiPlayer);
+        const humanScore = evaluateBoard(board, humanPlayer);
+        return aiScore - humanScore * 1.1; // Slightly prioritize defense
+    }
+
+    const currentPlayer = isMax ? aiPlayer : humanPlayer;
+    const candidates = getSortedCandidates(board);
+
+    // If no candidates, evaluate current board
+    if (candidates.length === 0) {
+        const aiScore = evaluateBoard(board, aiPlayer);
+        const humanScore = evaluateBoard(board, humanPlayer);
+        return aiScore - humanScore * 1.1;
+    }
+
+    if (isMax) {
+        let maxEval = -Infinity;
+        for (const { r, c } of candidates) {
+            board[r][c] = currentPlayer;
+
+            // Check for immediate win
+            const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
+            let won = false;
+            for (const [dr, dc] of dirs) {
+                const { count } = evaluateLine(board, r, c, dr, dc, currentPlayer);
+                if (count >= 5) { won = true; break; }
+            }
+
+            let eval_;
+            if (won) {
+                eval_ = SCORE.FIVE;
+            } else {
+                eval_ = minimax(board, depth - 1, alpha, beta, false, aiPlayer, humanPlayer);
+            }
+
+            board[r][c] = 0;
+            maxEval = Math.max(maxEval, eval_);
+            alpha = Math.max(alpha, eval_);
+            if (beta <= alpha) break;
+        }
+        return maxEval;
+    } else {
+        let minEval = Infinity;
+        for (const { r, c } of candidates) {
+            board[r][c] = currentPlayer;
+
+            // Check for opponent winning
+            const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
+            let won = false;
+            for (const [dr, dc] of dirs) {
+                const { count } = evaluateLine(board, r, c, dr, dc, currentPlayer);
+                if (count >= 5) { won = true; break; }
+            }
+
+            let eval_;
+            if (won) {
+                eval_ = -SCORE.FIVE;
+            } else {
+                eval_ = minimax(board, depth - 1, alpha, beta, true, aiPlayer, humanPlayer);
+            }
+
+            board[r][c] = 0;
+            minEval = Math.min(minEval, eval_);
+            beta = Math.min(beta, eval_);
+            if (beta <= alpha) break;
+        }
+        return minEval;
+    }
+}
+
+// Main AI function
+function findBestMove(board) {
+    const aiPlayer = 2; // AI is white
+    const humanPlayer = 1; // Human is black
+
+    // Check for immediate winning move
+    const winMove = hasWinningMove(board, aiPlayer);
+    if (winMove) return winMove;
+
+    // Check for blocking opponent's winning move
+    const blockMove = hasWinningMove(board, humanPlayer);
+    if (blockMove) return blockMove;
+
+    const candidates = getSortedCandidates(board);
+    if (candidates.length === 0) return { r: 7, c: 7 };
+
+    let bestMove = candidates[0];
+    let bestScore = -Infinity;
+
+    // Use iterative deepening for better performance
+    for (let depth = 2; depth <= Math.min(AI_DEPTH, 6); depth += 2) {
+        for (const { r, c } of candidates) {
+            board[r][c] = aiPlayer;
+            const score = minimax(board, depth - 1, -Infinity, Infinity, false, aiPlayer, humanPlayer);
+            board[r][c] = 0;
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestMove = { r, c };
+            }
+        }
+    }
+
+    return bestMove;
+}
+
+// ===================== Win Check =====================
+
 function checkWin(board, r, c) {
     const player = board[r][c];
     const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
@@ -141,7 +296,8 @@ function checkWin(board, r, c) {
     return null;
 }
 
-// --- Drawing ---
+// ===================== Drawing =====================
+
 function draw() {
     ctx.clearRect(0, 0, BOARD_PX, BOARD_PX);
 
@@ -226,7 +382,8 @@ function drawStone(r, c, player) {
     ctx.restore();
 }
 
-// --- Interaction ---
+// ===================== Interaction =====================
+
 canvas.addEventListener('click', (e) => {
     if (gameOver) return;
 
@@ -333,7 +490,6 @@ function undoMove() {
     } else {
         const m = history.pop();
         grid[m.r][m.c] = 0;
-        turn = m.r !== undefined ? (grid[m.r][m.c] === 0 ? (turn === 1 ? 2 : 1) : turn) : 1;
         turn = turn === 1 ? 2 : 1;
     }
 
